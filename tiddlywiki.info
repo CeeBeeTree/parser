@@ -10,10 +10,13 @@
     ],
     "build": {
         "index": [
+            "--output", "parser/docs/", 
             "--render",
             "$:/core/save/all",
             "index.html",
-            "text/plain"
+			"text/plain",
+			"",
+			"publishFilter", "-$:/plugins/tiddlywiki/tiddlyweb -$:/plugins/tiddlywiki/filesystem"
         ],
         "empty": [
             "--render",
