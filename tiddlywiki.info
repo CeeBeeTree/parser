@@ -16,7 +16,7 @@
             "index.html",
 			"text/plain",
 			"",
-			"publishFilter", "-$:/plugins/tiddlywiki/tiddlyweb -$:/plugins/tiddlywiki/filesystem"
+			"publishFilter", "-[[$:/plugins/tiddlywiki/tiddlyweb]] -[[$:/plugins/tiddlywiki/filesystem]]"
         ],
         "empty": [
             "--render",

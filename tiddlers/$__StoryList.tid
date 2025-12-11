@@ -1,2 +1,2 @@
-list: 
+list: $:/ControlPanel $:/plugins/tiddlywiki/tiddlyweb $:/plugins/tiddlywiki/filesystem
 title: $:/StoryList
