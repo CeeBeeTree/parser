@@ -14,9 +14,7 @@ The libary is based on a tutorial by lowbyteproductions at
 https://www.youtube.com/watch?v=6oQLRhw5Ah0&t=4s 
 
 TODO: 
-- Wrap ParserState in a class for better encapsulation.
 - Check regex escape sequences in literal parser and all but parser.
-- Add look ahead parser for chain combinator.
 - Refactor one or more ; between sepBy etc as combinations of others (eg sequenceof)
 - add as parser function to modify strings to literal parser
 
@@ -44,6 +42,11 @@ TODO:
       constructor(parserStateTransformerFn) {
         this.parserStateTransformerFn = parserStateTransformerFn;
       }
+
+      step(parserState) {
+        if (parserState.isError) return parserState;
+        return this.parserStateTransformerFn(parserState);
+      }
     
       run(target) {
         const initialState = {
@@ -54,12 +57,12 @@ TODO:
           error: null
         };
     
-        return this.parserStateTransformerFn(initialState);
+        return this.step(initialState);
       }
     
       map(fn) {
         return new Parser(parserState => {
-          const nextState = this.parserStateTransformerFn(parserState);
+          const nextState = this.step(parserState);
     
           if (nextState.isError) return nextState;
     
@@ -69,19 +72,19 @@ TODO:
     
       chain(fn) {
         return new Parser(parserState => {
-          const nextState = this.parserStateTransformerFn(parserState);
+          const nextState = this.step(parserState);
     
           if (nextState.isError) return nextState;
     
           const nextParser = fn(nextState.result);
     
-          return nextParser.parserStateTransformerFn(nextState);
+          return nextParser.step(nextState);
         });
       }
     
       errorMap(fn) {
         return new Parser(parserState => {
-          const nextState = this.parserStateTransformerFn(parserState);
+          const nextState = this.step(parserState);
     
           if (!nextState.isError) return nextState;
     
@@ -89,233 +92,227 @@ TODO:
         });
       }
     }
+
+    /*  
+    *  Single Token Parsers - return a matched string or error
+    */
+    const regexMatch = (re, parserState) => {
+      const slicedTarget = parserState.target.slice(parserState.index)
+      const regexMatch = slicedTarget.match(re);
+      if (regexMatch && regexMatch[0].length > 0) {
+        return { found: true, match: regexMatch , error : null }
+      }else{
+        return { found: false, match: null, error: `regex: Couldn't find at index ${parserState.index}` }
+      }      
+    };
     
     const regex = re => new Parser(parserState => {
-      const { target, index, isError } = parserState;
-    
-      if (isError) {
-        return parserState;
+      const {found, match, error} = regexMatch(re, parserState);
+       
+      if (found) {
+        return updateParserState(parserState, parserState.index + match.index + match[0].length, match[0]);
+      }else {
+        return updateParserError(parserState, error);
       }
-    
-      const slicedTarget = target.slice(index)
-    
-      if (slicedTarget.length === 0) {
-        return updateParserError(parserState, `regex: Got Unexpected end of input.`);
+    });
+
+    const lookaheadRegex = re => new Parser(parserState => {
+      const {found, match, error} = regexMatch(re, parserState); 
+
+      if (found) {
+        return updateParserState(parserState, parserState.index + match.index, match[0]);
+      }else {
+        return updateParserError(parserState, error);
       }
-    
-      const regexMatch = slicedTarget.match(re);
-    
-      if (regexMatch && regexMatch[0].length > 0) {
-        return updateParserState(parserState, index + regexMatch.index + regexMatch[0].length, regexMatch[0]);
-      }
-    
-      return updateParserError(
-        parserState,
-        `regex: Couldn't find at index ${index}`
-      );
     });
     
-    const literal = s => regex(new RegExp(`^${s}`)).errorMap((error, index) => error.replace('regex: ', `str('${s}'): `));
+    const escapeRegExp = string => { return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');   };
+    const literal = s => regex(new RegExp(`^${escapeRegExp(s)}`)).errorMap((error, index) => error.replace('regex: ', `literal('${s}'): `));
     const letters = regex(/^[A-Za-z]+/).errorMap((error, index) => error.replace('regex: ', `letters: `));
     const digits = regex(/^[0-9]+/).errorMap((error, index) => error.replace('regex: ', `digits: `));
-    
+    const asParser = p => { if (typeof p == "string") return literal(p); else return p; };
 
+    /*  
+    *  Complex Parsers - combine token parsers to produce a complex result or error
+    */
 
     const sequenceOf = parsers => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
       const results = [];
       let nextState = parserState;
     
       for (let p of parsers) {
-        nextState = p.parserStateTransformerFn(nextState);
-        results.push(nextState.result);
-      }
-    
-      if (nextState.isError) {
-        return nextState;
-      }
-    
-      return updateParserResult(nextState, results);
-    })
-    
-    const choice = parsers => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
-      for (let p of parsers) {
-        const nextState = p.parserStateTransformerFn(parserState);
-        if (!nextState.isError) {
-          return nextState;
-        }
-      }
-    
-      return updateParserError(
-        parserState,
-        `choice: Unable to match with any parser at index ${parserState.index}`
-      );
-    });
-    
-    const many = parser => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
-      let nextState = parserState;
-      const results = [];
-      let done = false;
-    
-      while (!done) {
-        let testState = parser.parserStateTransformerFn(nextState);
-    
-        if (!testState.isError) {
-          results.push(testState.result);
-          nextState = testState;
-        } else {
-          done = true;
-        }
-      }
-    
-      return updateParserResult(nextState, results);
-    });
-    
-    const many1 = parser => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
-      let nextState = parserState;
-      const results = [];
-      let done = false;
-    
-      while (!done) {
-        const nextState = parser.parserStateTransformerFn(nextState);
+        nextState = asParser(p).step(nextState);
         if (!nextState.isError) {
           results.push(nextState.result);
-        } else {
-          done = true;
-        }
+        } 
       }
-    
-      if (results.length === 0) {
-        return updateParserError(
-          parserState,
-          `many1: Unable to match any input using parser @ index ${parserState.index}`
-        );
-      }
-    
       return updateParserResult(nextState, results);
-    });
-    
-    
-    const sepBy = separatorParser => valueParser => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
-      const results = [];
-      let nextState = parserState;
-    
-      while (true) {
-        const thingWeWantState = valueParser.parserStateTransformerFn(nextState);
-        if (thingWeWantState.isError) {
-          break;
-        }
-        results.push(thingWeWantState.result);
-        nextState = thingWeWantState;
-    
-        const separatorState = separatorParser.parserStateTransformerFn(nextState);
-        if (separatorState.isError) {
-          break;
-        }
-        nextState = separatorState;
-      }
-    
-      return updateParserResult(nextState, results);
-    });
-    
-    const sepBy1 = separatorParser => valueParser => new Parser(parserState => {
-      if (parserState.isError) {
-        return parserState;
-      }
-    
-      const results = [];
-      let nextState = parserState;
-    
-      while (true) {
-        const thingWeWantState = valueParser.parserStateTransformerFn(nextState);
-        if (thingWeWantState.isError) {
-          break;
-        }
-        results.push(thingWeWantState.result);
-        nextState = thingWeWantState;
-    
-        const separatorState = separatorParser.parserStateTransformerFn(nextState);
-        if (separatorState.isError) {
-          break;
-        }
-        nextState = separatorState;
-      }
-    
-      if (results.length === 0) {
-        return updateParserError(
-          parserState,
-          `sepBy1: Unable to capture any results at index ${parserState.index}`
-        );
-      }
-    
-      return updateParserResult(nextState, results);
-    });
-    
-    
-    const between = (leftParser, rightParser) => contentParser => sequenceOf([
-      leftParser,
-      contentParser,
-      rightParser
-    ]).map(results => results[1]);
-    
+    }).errorMap((error, index) => `sequenceOf: ${error}`);
+
     const lazy = parserThunk => new Parser(parserState => {
       const parser = parserThunk();
       return parser.parserStateTransformerFn(parserState);
     });
     
-    const allbut = butParser => new Parser(parserState => {
-      const { target, index, isError } = parserState;
+    // const choice = parsers => new Parser(parserState => {
+    //   if (parserState.isError) {
+    //     return parserState;
+    //   }
     
-      if (isError) {
-        return parserState;
-      }
+    //   for (let p of parsers) {
+    //     const nextState = p.parserStateTransformerFn(parserState);
+    //     if (!nextState.isError) {
+    //       return nextState;
+    //     }
+    //   }
     
-      const butMatchState = butParser.parserStateTransformerFn(parserState);
-      if (butMatchState.isError){
-        return updateParserState(parserState, target.length, target.slice(index));
-      }else {
-        const newIndex = butMatchState.index - butMatchState.result.length;
-        return updateParserState(parserState, newIndex, target.slice(index, newIndex));
-      }
-    });
+    //   return updateParserError(
+    //     parserState,
+    //     `choice: Unable to match with any parser at index ${parserState.index}`
+    //   );
+    // });
+    
+    // const many = parser => new Parser(parserState => {
+    //   if (parserState.isError) {
+    //     return parserState;
+    //   }
+    
+    //   let nextState = parserState;
+    //   const results = [];
+    //   let done = false;
+    
+    //   while (!done) {
+    //     let testState = parser.parserStateTransformerFn(nextState);
+    
+    //     if (!testState.isError) {
+    //       results.push(testState.result);
+    //       nextState = testState;
+    //     } else {
+    //       done = true;
+    //     }
+    //   }
+    
+    //   return updateParserResult(nextState, results);
+    // });
+    
+    // const many1 = parser => new Parser(parserState => {
+    //   if (parserState.isError) {
+    //     return parserState;
+    //   }
+    
+    //   let nextState = parserState;
+    //   const results = [];
+    //   let done = false;
+    
+    //   while (!done) {
+    //     const nextState = parser.parserStateTransformerFn(nextState);
+    //     if (!nextState.isError) {
+    //       results.push(nextState.result);
+    //     } else {
+    //       done = true;
+    //     }
+    //   }
+    
+    //   if (results.length === 0) {
+    //     return updateParserError(
+    //       parserState,
+    //       `many1: Unable to match any input using parser @ index ${parserState.index}`
+    //     );
+    //   }
+    
+    //   return updateParserResult(nextState, results);
+    // });
+    
+    
+    // const sepBy = separatorParser => valueParser => new Parser(parserState => {
+    //   if (parserState.isError) {
+    //     return parserState;
+    //   }
+    
+    //   const results = [];
+    //   let nextState = parserState;
+    
+    //   while (true) {
+    //     const thingWeWantState = valueParser.parserStateTransformerFn(nextState);
+    //     if (thingWeWantState.isError) {
+    //       break;
+    //     }
+    //     results.push(thingWeWantState.result);
+    //     nextState = thingWeWantState;
+    
+    //     const separatorState = separatorParser.parserStateTransformerFn(nextState);
+    //     if (separatorState.isError) {
+    //       break;
+    //     }
+    //     nextState = separatorState;
+    //   }
+    
+    //   return updateParserResult(nextState, results);
+    // });
+    
+    // const sepBy1 = separatorParser => valueParser => new Parser(parserState => {
+    //   if (parserState.isError) {
+    //     return parserState;
+    //   }
+    
+    //   const results = [];
+    //   let nextState = parserState;
+    
+    //   while (true) {
+    //     const thingWeWantState = valueParser.parserStateTransformerFn(nextState);
+    //     if (thingWeWantState.isError) {
+    //       break;
+    //     }
+    //     results.push(thingWeWantState.result);
+    //     nextState = thingWeWantState;
+    
+    //     const separatorState = separatorParser.parserStateTransformerFn(nextState);
+    //     if (separatorState.isError) {
+    //       break;
+    //     }
+    //     nextState = separatorState;
+    //   }
+    
+    //   if (results.length === 0) {
+    //     return updateParserError(
+    //       parserState,
+    //       `sepBy1: Unable to capture any results at index ${parserState.index}`
+    //     );
+    //   }
+    
+    //   return updateParserResult(nextState, results);
+    // });
+    
+    
+    // const between = (leftParser, rightParser) => contentParser => sequenceOf([
+    //   leftParser,
+    //   contentParser,
+    //   rightParser
+    // ]).map(results => results[1]);
+    
+
+    
+    // const allbut = butParser => new Parser(parserState => {
+    //   const { target, index, isError } = parserState;
+    
+    //   if (isError) {
+    //     return parserState;
+    //   }
+    
+    //   const butMatchState = butParser.parserStateTransformerFn(parserState);
+    //   if (butMatchState.isError){
+    //     return updateParserState(parserState, target.length, target.slice(index));
+    //   }else {
+    //     const newIndex = butMatchState.index - butMatchState.result.length;
+    //     return updateParserState(parserState, newIndex, target.slice(index, newIndex));
+    //   }
+    // });
     
       
 
 
-    const parserLibrary = {letters, sequenceOf, regex, sepBy, literal, allbut}
+    const parserLibrary = { Parser, letters, sequenceOf, regex, literal, lookaheadRegex, lazy}
       
     exports.parserLibrary = parserLibrary;
-    exports.Parser = Parser;
-    exports.regex = regex;
-    exports.literal = literal;
-    exports.letters = letters;
-    exports.digits = digits;
-    exports.sequenceOf = sequenceOf;
-    exports.choice = choice;
-    exports.many = many;
-    exports.many1 = many1;
-    exports.sepBy = sepBy;
-    exports.sepBy1 = sepBy1;
-    exports.between = between;
-    exports.lazy = lazy;
-    exports.allbut = allbut;
+    
     
